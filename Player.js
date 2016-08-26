@@ -110,22 +110,85 @@ class Goal {
   fulfilled(worldState) {
     return true;
   }
+
+  getUrgency(worldState) {
+    return 1;
+  }
+
+  getName() { return '...'; }
 }
 
 class ExplorationGoal extends Goal {
   fulfilled(worldState) {
+    if (worldState.state.currentCell == CELL_STAIRS)
+      return false;
+
     for (let i = 0; i < directions.length; i++) {
       if (worldState.state[directions[i]] == CELL_UNEXPLORED)
         return true;
     }
     return false;
   }
+
+  getName() { return 'explore'; }
 }
 
 class StairsGoal extends Goal {
   fulfilled(worldState) {
     return worldState.state.currentCell == CELL_STAIRS;
   }
+
+  getUrgency() {
+    return 0.5;
+  }
+
+  getName() { return 'reach the stairs'; }
+}
+
+class SurvivalGoal extends Goal {
+  constructor(hpLimit, hpGoal) {
+    super();
+    this.hpLimit = hpLimit;
+    this.hpGoal = hpGoal;
+    this.healing = false;
+  }
+
+  fulfilled(worldState) {
+    return worldState.state.health >= this.hpGoal;
+  }
+
+  getUrgency(worldState) {
+    if (this.healing && worldState.state.health >= this.hpGoal) {
+      this.healing = false;
+    } else if (worldState.state.health < this.hpLimit) {
+      this.healing = true;
+    }
+    return this.healing ? 2 : 0;
+  }
+
+  getName() { return 'survive'; }
+}
+
+class RescueGoal extends Goal {
+
+  fulfilled(worldState) {
+    return worldState.captiveCount == 0;
+  }
+
+  getName() { return 'rescue'; }
+}
+
+class KillGoal extends Goal {
+
+  fulfilled(worldState) {
+    return !!worldState.state.enemyKilled;
+  }
+
+  getUrgency(worldState) {
+    return !!worldState.state.underFire ? 10 : 0;
+  }
+
+  getName() { return 'kill'; }
 }
 
 
@@ -134,55 +197,111 @@ class StairsGoal extends Goal {
 const CELL_UNEXPLORED = 0x00;
 const CELL_EMPTY = 0x01;
 const CELL_STAIRS = 0x02;
-const CELL_ENEMY = 0x03;
-const CELL_CAPTIVE = 0x04;
-const CELL_WALL = 0x05;
-const CELL_TICKING = 0x06;
+const CELL_ENEMY = 0x04;
+const CELL_CAPTIVE = 0x08;
+const CELL_WALL = 0x10;
+const CELL_TICKING = 0x20;
 
 class Map {
 
   constructor(width, height) {
     this.width = width;
     this.height = height;
+    this.offset = { x: 0, y: 0 };
     this.cells = [];
     for (let y = 0; y < height; y++) {
       for (let x = 0; x < width; x++) {
-        this.cells.push(CELL_UNEXPLORED);
+        this.cells.push({
+          type: CELL_UNEXPLORED,
+          hpDrain: 0
+        });
       }
     }
   }
 
-  resize(x, y, width, height) {
-    // TODO: resize map
-  }
-
   setCell(x, y, value) {
+    x += this.offset.x;
+    y += this.offset.y;
     this.cells[x + y*this.width] = value;
+
+    var newWidth = this.width;
+    var newHeight = this.height;
+    var offsetX = 0;
+    var offsetY = 0;
+    if (x == 0) {
+      newWidth += 5;
+      offsetX = 5;
+    } else if (x == this.width - 1) {
+      newWidth += 5;
+    } else if (y == 0) {
+      newHeight += 5;
+      offsetY = 5;
+    } else if (y == this.height - 1) {
+      newHeight += 5;
+    }
+    if (newWidth != this.width || newHeight != this.height) {
+      this.offset.x += offsetX;
+      this.offset.y += offsetY;
+      var oldCells = this.cells;
+      this.cells = [];
+      for (let y = 0; y < newHeight; y++) {
+        for (let x = 0; x < newWidth; x++) {
+          let cell = null;
+          if ((x >= offsetX && x < offsetX + this.width) &&
+              (y >= offsetY && y < offsetY + this.height)) {
+            cell = oldCells[(x - offsetX) + (y - offsetY) * this.width];
+          } else {
+            cell = {
+              type: CELL_UNEXPLORED,
+              hpDrain: 0
+            }
+          }
+          this.cells.push(cell);
+        }
+      }
+      this.width = newWidth;
+      this.height = newHeight;
+    }
   }
 
   getCell(x, y, mapDiff) {
+    x += this.offset.x;
+    y += this.offset.y;
     if (Array.isArray(mapDiff)) {
       for (let i = mapDiff.length - 1; i >= 0; i--) {
-        if (mapDiff[i].x == x && mapDiff[i].y == y)
+        if (mapDiff[i].x + this.offset.x == x &&
+            mapDiff[i].y + this.offset.y == y)
           return mapDiff[i].value;
       }
     }
     return this.cells[x + y*this.width];
   }
 
-  toString() {
+  toString(position) {
+    if (!!position) {
+      position = {
+        x: position.x + this.offset.x,
+        y: position.y + this.offset.y
+      }
+    } else {
+      position = { x: -1, y: -1 };
+    }
     var string = '';
     for (let y = 0; y < this.height; y++) {
       for (let x = 0; x < this.width; x++) {
         var char = '';
-        switch (this.cells[x + y*this.width]) {
-          case CELL_UNEXPLORED: char = '?'; break;
-          case CELL_EMPTY: char = ' '; break;
-          case CELL_STAIRS: char = '>'; break;
-          case CELL_ENEMY: char = 'E'; break;
-          case CELL_CAPTIVE: char = 'C'; break;
-          case CELL_WALL: char = 'X'; break;
-          case CELL_TICKING: char = 'B'; break;
+        if (x == position.x && y == position.y) {
+          char = '@';
+        } else {
+          switch (this.cells[x + y*this.width].type) {
+            case CELL_UNEXPLORED: char = '?'; break;
+            case CELL_EMPTY: char = this.cells[x + y*this.width].hpDrain ? '*' : ' '; break;
+            case CELL_STAIRS: char = '>'; break;
+            case CELL_ENEMY: char = 'E'; break;
+            case CELL_CAPTIVE: char = 'C'; break;
+            case CELL_WALL: char = 'X'; break;
+            case CELL_TICKING: char = 'B'; break;
+          }
         }
         string += char;
       }
@@ -231,6 +350,7 @@ class Action {
         mapDiff[i].value
       )
     }
+    worldState.mapDiff = [];
   }
 
   toString() {
@@ -249,7 +369,8 @@ class Walk extends Action {
   }
 
   canPerform(worldState) {
-    return worldState.state[this.direction] == CELL_EMPTY;
+    return worldState.state[this.direction] == CELL_EMPTY ||
+           worldState.state[this.direction] == CELL_STAIRS;
   }
 
   perform(warrior, worldState) {
@@ -306,7 +427,90 @@ class Kill extends Action {
       this.direction,
       position
     );
-    diff.value = CELL_EMPTY;
+    diff.value = {
+      type: CELL_EMPTY,
+      hpDrain: 0
+    };
+    worldState.mapDiff.push(diff);
+
+    var effects = {
+      enemyKilled: true
+    };
+    this.player.virtualSense(
+      effects,
+      worldState,
+      position.x,
+      position.y
+    );
+    return effects;
+  }
+
+  toString() {
+    return 'Kill ' + this.direction;
+  }
+}
+
+
+//== Resting ==//
+
+class Rest extends Action {
+
+  canPerform(worldState) {
+    var position = worldState.state.position;
+    var cell = this.player.map.getCell(position.x, position.y, worldState.mapDiff);
+    return cell.hpDrain < 2;
+  }
+
+  perform(warrior, worldState) {
+    super.perform(warrior, worldState);
+    warrior.rest();
+  }
+
+  getEffects(worldState) {
+    var effects = {
+      health: worldState.state.health + 2,
+      healed: 2
+    }
+    if (effects.health > 20)
+      effects.health = 20;
+    return effects;
+  }
+
+  toString() {
+    return 'Rest';
+  }
+}
+
+
+//== Rescuing ==//
+
+class Rescue extends Action {
+
+  constructor(player, direction) {
+    super(player);
+    this.direction = direction;
+  }
+
+  canPerform(worldState) {
+    return worldState.state[this.direction] == CELL_CAPTIVE;
+  }
+
+  perform(warrior, worldState) {
+    super.perform(warrior, worldState);
+    warrior.rescue(this.direction);
+  }
+
+  getEffects(worldState) {
+    var position = worldState.state.position;
+    var diff = stepInDir(
+      worldState.state.facing,
+      this.direction,
+      position
+    );
+    diff.value = {
+      type: CELL_EMPTY,
+      hpDrain: 0
+    };
     worldState.mapDiff.push(diff);
 
     var effects = {};
@@ -320,7 +524,7 @@ class Kill extends Action {
   }
 
   toString() {
-    return 'Kill ' + this.direction;
+    return 'Rescue ' + this.direction;
   }
 }
 
@@ -437,7 +641,7 @@ class Planner {
       closed.push(node);
     }
 
-    console.log('Could not find a way to fulfill goal ;(');
+    console.log('Could not find a way to ' + goal.getName() + ' ;(');
     console.log('iterations: ' + iteration);
     return [];
   }
@@ -454,80 +658,129 @@ class Player {
     this.turnCount = 0;
     this.map = new Map(10, 10);
     var position = { x: 1, y: 1 };
-    this.map.setCell(position.x, position.y, CELL_EMPTY);
+    this.map.setCell(position.x, position.y, {
+      type: CELL_EMPTY,
+      hpDrain: 0
+    });
     this.worldState = new WorldState({
       facing: 'east',
       position: position,
-      currentCell: null
+      currentCell: null,
+      captiveCount: 0
     });
     this.actions = [
       new Walk(this, 'forward'),
       new Walk(this, 'backward'),
-      new Kill(this, 'forward')
+      new Kill(this, 'forward'),
+      new Kill(this, 'backward'),
+      new Rest(this),
+      new Rescue(this, 'forward'),
+      new Rescue(this, 'backward')
     ];
     this.goals = [
       new ExplorationGoal(),
-      new StairsGoal()
+      new StairsGoal(),
+      new SurvivalGoal(13, 20),
+      new KillGoal()
+      // new RescueGoal()
     ];
     this.plan = [];
+    this.currentGoal = null;
     this.prevHP = 20;
   }
 
   prioritize() {
-    return this.goals;
+    this.goals.sort((a, b) => {
+      var aUrgency = a.getUrgency(this.worldState);
+      var bUrgency = b.getUrgency(this.worldState);
+      return bUrgency - aUrgency; // Sort with descending urgency
+    });
   }
 
   sense(warrior) {
     var state = this.worldState.state;
+    var cell = this.map.getCell(state.position.x, state.position.y);
+    var enemyKilled = false;
+    var enemyAdjacent = false;
+
+    state.health = warrior.health();
+    var hpDrain = this.prevHP - state.health + state.healed;
+    state.healed = 0;
+    cell.hpDrain = hpDrain;
+    console.log('HP drain: ' + hpDrain);
+    console.log('HP left: ' + state.health);
+
     for (let i = 0; i < directions.length; i++) {
-      var direction = directions[i];
-      var space = warrior.feel(direction);
-      var position = stepInDir(state.facing, direction, state.position);
-      var cell = CELL_UNEXPLORED;
-      if (space.isEmpty())
-        cell = CELL_EMPTY;
-      else if (space.isStairs())
-        cell = CELL_STAIRS;
-      else if (space.isEnemy())
-        cell = CELL_ENEMY;
-      else if (space.isCaptive())
+      let direction = directions[i];
+      let space = warrior.feel(direction);
+      let position = stepInDir(state.facing, direction, state.position);
+      let cell = CELL_UNEXPLORED;
+      if (space.isCaptive()) {
         cell = CELL_CAPTIVE;
-      else if (space.isWall())
+      } else if (space.isEnemy()) {
+        cell = CELL_ENEMY;
+        enemyAdjacent = true;
+      } else if (space.isWall()) {
         cell = CELL_WALL;
-      else if (space.isTicking())
+      } else if (space.isTicking()) {
         cell = CELL_TICKING;
-      if (cell != this.map.getCell(position.x, position.y)) {
-        this.plan = []; // New info, plan needs to be updated
+      } else if (space.isStairs()) {
+        cell = CELL_STAIRS;
+      } else if (space.isEmpty()) {
+        cell = CELL_EMPTY;
       }
-      this.map.setCell(position.x, position.y, cell);
+      let oldCell = this.map.getCell(position.x, position.y).type;
+      if (cell != oldCell) {
+        if (oldCell == CELL_ENEMY)
+          enemyKilled = true;
+        this.plan = []; // New info, plan needs to be updated
+        if (cell == CELL_CAPTIVE)
+          this.worldState.state.captiveCount++;
+      }
+      this.map.setCell(position.x, position.y, {
+        type: cell,
+        // hpDrain: this.map.getCell(position.x, position.y).hpDrain
+        hpDrain: 0
+      });
       state[direction] = cell;
     }
-    state.health = warrior.health();
-    var hpDrain = this.prevHP - state.health;
-    console.log('HP drain: ' + hpDrain);
-    console.log(this.map.toString());
+    state.enemyKilled = enemyKilled;
+    state.enemyAdjacent = enemyAdjacent;
+    if (hpDrain > 0 && !enemyAdjacent)
+      state.underFire = true;
+    else if (state.underFire && state.enemyKilled)
+      state.underFire = false;
+    state.currentCell = cell.type;
+    console.log('Under fire: ' + state.underFire);
+    console.log(this.map.toString(state.position));
   }
 
   virtualSense(effects, worldState, x, y) {
     var state = worldState.state;
     var mapDiff = worldState.mapDiff;
     var map = this.map;
+    effects.currentCell = map.getCell(x, y, mapDiff).type;
     for (let i = 0; i < directions.length; i++) {
       var direction = directions[i];
       var position = stepInDir(state.facing, direction, { x: x, y: y });
-      effects[direction] = map.getCell(position.x, position.y, mapDiff);
+      effects[direction] = map.getCell(position.x, position.y, mapDiff).type;
     }
   }
 
   playTurn(warrior) {
     console.log('\n== TURN ' + this.turnCount + ' ==');
     this.sense(warrior);
-    if (this.plan.length == 0) {
-      var goals = this.prioritize();
-      for (let i = 0; i < goals.length; i++) {
-        this.plan = planner.makePlan(this, goals[i]);
-        if (this.plan.length > 0)
+    console.log(this.worldState);
+    this.prioritize();
+    if (this.plan.length == 0 || this.goals[0] != this.currentGoal) {
+      for (let i = 0; i < this.goals.length; i++) {
+        console.log('I need to ' + this.goals[i].getName());
+        this.plan = planner.makePlan(this, this.goals[i]);
+        console.log('Plan length: ' + this.plan.length);
+        if (this.plan.length > 0) {
+          this.currentGoal = this.goals[i];
           break;
+        }
       }
       if (this.plan.length > 0) {
         console.log('This is my plan: ' + this.plan.length);
