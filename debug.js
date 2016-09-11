@@ -46,11 +46,11 @@ class Warrior {
   constructor() {
     this._health = 20;
     this.map = {
-      width: 10,
+      width: 8,
       height: 3,
-      tiles: Array.from('WWWWWWWWWW' +
-                        'WC @ S aaW' +
-                        'WWWWWWWWWW')
+      tiles: Array.from('WWWWWWWW' +
+                        'W@ CSS>W' +
+                        'WWWWWWWW')
     }
 
     var position = { x: 1, y: 1 };
@@ -81,6 +81,10 @@ class Warrior {
   }
 
   _getCell(x, y) {
+    if ((x < 0 || x >= this.map.width) ||
+        (y < 0 || y >= this.map.height)) {
+      return 'W';
+    }
     return this.map.tiles[x + y * this.map.width];
   }
 
@@ -115,9 +119,23 @@ class Warrior {
     }
   }
 
+  pivot(direction) {
+    this.facing = dirToCard(this.facing, direction);
+  }
+
   feel(direction) {
     var position = stepInDir(this.facing, direction, this.position);
     return new Space(this._getCell(position.x, position.y).type);
+  }
+
+  look(direction) {
+    var spaces = [];
+    var position = this.position;
+    for (let i = 0; i < 3; i++) {
+      position = stepInDir(this.facing, direction, position);
+      spaces.push(new Space(this._getCell(position.x, position.y).type));
+    }
+    return spaces;
   }
 
   health() {

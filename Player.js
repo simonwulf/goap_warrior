@@ -120,6 +120,7 @@ class Goal {
 
 class ExplorationGoal extends Goal {
   fulfilled(worldState) {
+    // TODO: modify to take advantage of the new
     if (worldState.state.currentCell == CELL_STAIRS)
       return false;
 
@@ -185,7 +186,12 @@ class KillGoal extends Goal {
   }
 
   getUrgency(worldState) {
-    return !!worldState.state.underFire ? 10 : 0;
+    if (worldState.state.underFire)
+      return 10;
+    if (worldState.state.knownEnemies > 0)
+      return 2;
+    else
+      return 0;
   }
 
   getName() { return 'kill'; }
@@ -388,7 +394,8 @@ class Walk extends Action {
     };
     this.player.virtualSense(
       effects,
-      worldState,
+      worldState.state.facing,
+      worldState.mapDiff,
       effects.position.x,
       effects.position.y
     );
@@ -403,7 +410,7 @@ class Walk extends Action {
 
 //== Attacking ==//
 
-class Kill extends Action {
+class Attack extends Action {
 
   constructor(player, direction) {
     super(player);
@@ -412,12 +419,16 @@ class Kill extends Action {
 
   canPerform(worldState) {
     // TODO: health concerns
-    return worldState.state[this.direction] == CELL_ENEMY;
+    return (worldState.state[this.direction] & CELL_ENEMY);
   }
 
   perform(warrior, worldState) {
     super.perform(warrior, worldState);
     warrior.attack(this.direction);
+  }
+
+  getCost(worldState) {
+    return this.direction == 'forward' ? 1 : 3; // TODO: something about costs is not working, need to sort that out
   }
 
   getEffects(worldState) {
@@ -438,7 +449,8 @@ class Kill extends Action {
     };
     this.player.virtualSense(
       effects,
-      worldState,
+      worldState.state.facing,
+      worldState.mapDiff,
       position.x,
       position.y
     );
@@ -446,7 +458,7 @@ class Kill extends Action {
   }
 
   toString() {
-    return 'Kill ' + this.direction;
+    return 'Attack ' + this.direction;
   }
 }
 
@@ -456,6 +468,10 @@ class Kill extends Action {
 class Rest extends Action {
 
   canPerform(worldState) {
+    if (worldState.state.enemyAdjacent ||
+        worldState.state.health >= 20) {
+      return false;
+    }
     var position = worldState.state.position;
     var cell = this.player.map.getCell(position.x, position.y, worldState.mapDiff);
     return cell.hpDrain < 2;
@@ -516,7 +532,8 @@ class Rescue extends Action {
     var effects = {};
     this.player.virtualSense(
       effects,
-      worldState,
+      worldState.state.facing,
+      worldState.mapDiff,
       position.x,
       position.y
     );
@@ -525,6 +542,115 @@ class Rescue extends Action {
 
   toString() {
     return 'Rescue ' + this.direction;
+  }
+}
+
+
+//== Pivoting ==//
+
+class Pivot extends Action {
+
+  constructor(player, direction) {
+    super(player);
+    this.direction = direction;
+  }
+
+  canPerform(worldState) {
+    // TODO: raise cost instead when it's working
+    return !worldState.state.enemyAdjacent;
+  }
+
+  perform(warrior, worldState) {
+    super.perform(warrior, worldState);
+    warrior.pivot(this.direction);
+  }
+
+  getEffects(worldState) {
+    var effects = {
+      facing: dirToCard(worldState.state.facing, this.direction)
+    }
+    this.player.virtualSense(
+      effects,
+      effects.facing,
+      worldState.mapDiff,
+      worldState.state.position.x,
+      worldState.state.position.y
+    );
+    return effects;
+  }
+
+  toString() {
+    return 'Pivot ' + this.direction;
+  }
+}
+
+
+//== Shooting ==//
+
+class Shoot extends Action {
+
+  constructor(player, direction) {
+    super(player);
+    this.direction = direction;
+  }
+
+  hitScan(worldState) {
+    var position = worldState.state.position;
+    var facing = worldState.state.facing;
+    for (let i = 0; i < 3; i++) {
+      position = stepInDir(facing, this.direction, position);
+      var cell = this.player.map.getCell(position.x, position.y, worldState.mapDiff).type;
+      if ((cell & CELL_CAPTIVE) ||
+          (cell & CELL_ENEMY) ||
+          (cell & CELL_WALL) ||
+          (cell & CELL_UNEXPLORED)) {
+        return {
+          cell: cell,
+          position: position
+        }
+      }
+    }
+    return null;
+  }
+
+  canPerform(worldState) {
+    var hit = this.hitScan(worldState);
+    return (hit != null) && (hit.cell & CELL_ENEMY);
+  }
+
+  perform(warrior, worldState) {
+    super.perform(warrior, worldState);
+    warrior.shoot(this.direction);
+  }
+
+  getEffects(worldState) {
+    var hit = this.hitScan(worldState);
+    var diff = {
+      x: hit.position.x,
+      y: hit.position.y,
+      value: {
+        type: hit.position.type,
+        hpDrain: 0
+      }
+    };
+    worldState.mapDiff.push(diff);
+
+    var position = worldState.state.position;
+    var effects = {
+      enemyKilled: true
+    };
+    this.player.virtualSense(
+      effects,
+      worldState.state.facing,
+      worldState.mapDiff,
+      position.x,
+      position.y
+    );
+    return effects;
+  }
+
+  toString() {
+    return 'Shoot ' + this.direction;
   }
 }
 
@@ -666,16 +792,21 @@ class Player {
       facing: 'east',
       position: position,
       currentCell: null,
-      captiveCount: 0
+      captiveCount: 0,
+      knownEnemies: 0,
+      underFire: false
     });
     this.actions = [
       new Walk(this, 'forward'),
       new Walk(this, 'backward'),
-      new Kill(this, 'forward'),
-      new Kill(this, 'backward'),
+      new Attack(this, 'forward'),
+      new Attack(this, 'backward'),
       new Rest(this),
       new Rescue(this, 'forward'),
-      new Rescue(this, 'backward')
+      new Rescue(this, 'backward'),
+      new Pivot(this, 'backward'),
+      new Shoot(this, 'forward'),
+      new Shoot(this, 'backward')
     ];
     this.goals = [
       new ExplorationGoal(),
@@ -704,7 +835,7 @@ class Player {
     var enemyAdjacent = false;
 
     state.health = warrior.health();
-    var hpDrain = this.prevHP - state.health + state.healed;
+    var hpDrain = Math.min(this.prevHP + state.healed, 20) - state.health;
     state.healed = 0;
     cell.hpDrain = hpDrain;
     console.log('HP drain: ' + hpDrain);
@@ -712,37 +843,47 @@ class Player {
 
     for (let i = 0; i < directions.length; i++) {
       let direction = directions[i];
-      let space = warrior.feel(direction);
-      let position = stepInDir(state.facing, direction, state.position);
-      let cell = CELL_UNEXPLORED;
-      if (space.isCaptive()) {
-        cell = CELL_CAPTIVE;
-      } else if (space.isEnemy()) {
-        cell = CELL_ENEMY;
-        enemyAdjacent = true;
-      } else if (space.isWall()) {
-        cell = CELL_WALL;
-      } else if (space.isTicking()) {
-        cell = CELL_TICKING;
-      } else if (space.isStairs()) {
-        cell = CELL_STAIRS;
-      } else if (space.isEmpty()) {
-        cell = CELL_EMPTY;
+      //let space = warrior.feel(direction);
+      let spaces = warrior.look(direction);
+      let position = state.position;
+      for (let i = 0; i < spaces.length; i++) {
+        let space = spaces[i];
+        position = stepInDir(state.facing, direction, position);
+        let cell = CELL_UNEXPLORED;
+        if (space.isCaptive()) {
+          cell |= CELL_CAPTIVE;
+        } else if (space.isEnemy()) {
+          cell |= CELL_ENEMY;
+          enemyAdjacent = true;
+        } else if (space.isWall()) {
+          cell |= CELL_WALL;
+        } else if (space.isTicking()) {
+          cell |= CELL_TICKING;
+        } else if (space.isStairs()) {
+          cell |= CELL_STAIRS;
+        } else if (space.isEmpty()) {
+          cell |= CELL_EMPTY;
+        }
+        let oldCell = this.map.getCell(position.x, position.y).type;
+        if (cell != oldCell) {
+          if (oldCell == CELL_ENEMY) {
+            enemyKilled = true;
+            this.worldState.state.knownEnemies--;
+          }
+          this.plan = []; // New info, plan needs to be updated
+          if (cell == CELL_CAPTIVE)
+            this.worldState.state.captiveCount++;
+          if (cell == CELL_ENEMY)
+            this.worldState.state.knownEnemies++;
+        }
+        this.map.setCell(position.x, position.y, {
+          type: cell,
+          // hpDrain: this.map.getCell(position.x, position.y).hpDrain
+          hpDrain: 0
+        });
+        if (i == 0)
+          state[direction] = cell;
       }
-      let oldCell = this.map.getCell(position.x, position.y).type;
-      if (cell != oldCell) {
-        if (oldCell == CELL_ENEMY)
-          enemyKilled = true;
-        this.plan = []; // New info, plan needs to be updated
-        if (cell == CELL_CAPTIVE)
-          this.worldState.state.captiveCount++;
-      }
-      this.map.setCell(position.x, position.y, {
-        type: cell,
-        // hpDrain: this.map.getCell(position.x, position.y).hpDrain
-        hpDrain: 0
-      });
-      state[direction] = cell;
     }
     state.enemyKilled = enemyKilled;
     state.enemyAdjacent = enemyAdjacent;
@@ -755,16 +896,20 @@ class Player {
     console.log(this.map.toString(state.position));
   }
 
-  virtualSense(effects, worldState, x, y) {
-    var state = worldState.state;
-    var mapDiff = worldState.mapDiff;
+  virtualSense(effects, facing, mapDiff, x, y) {
+    // TODO: adapt to emulate look() instead of feel()
     var map = this.map;
+    var enemyAdjacent = false;
     effects.currentCell = map.getCell(x, y, mapDiff).type;
     for (let i = 0; i < directions.length; i++) {
       var direction = directions[i];
-      var position = stepInDir(state.facing, direction, { x: x, y: y });
-      effects[direction] = map.getCell(position.x, position.y, mapDiff).type;
+      var position = stepInDir(facing, direction, { x: x, y: y });
+      var cell = map.getCell(position.x, position.y, mapDiff).type;
+      effects[direction] = cell;
+      if (cell & CELL_ENEMY)
+        enemyAdjacent = true;
     }
+    effects.enemyAdjacent = enemyAdjacent;
   }
 
   playTurn(warrior) {
